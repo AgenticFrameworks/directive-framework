@@ -179,3 +179,5 @@ cython_debug/
 gdrive
 idea.md
 case-study-odo-bootstrap.md
+cleanup.md
+handoffs/
