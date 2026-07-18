@@ -174,3 +174,8 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+
+# --- directive-framework project-specific ---
+gdrive
+idea.md
+case-study-odo-bootstrap.md

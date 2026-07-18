@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# ED dashboard-currency + registry-schema gate (ED-008 + ED-012).
+#
+# Refuses a commit whose staged registry (dev/directives/directives.jsonl) is malformed per
+# validate-registry.py's schema (ED-012), OR whose derived dashboard (dev/directive-
+# framework/README.md) is out of sync with the registry (ED-008). Both checks judge the
+# STAGED (to-be-committed) content, not the working tree — see rationale below.
+#
+# ED-012 adds the validate-registry.py step BEFORE the dashboard-currency render. It closes
+# two gaps the currency check alone left open (both reproduced live against this exact
+# pre-ED-012 hook, 2026-07-04):
+#   * A non-dict JSON line (e.g. a bare `[1,2,3]`) crashed derive-dashboard.py's load() with
+#     an unhandled AttributeError — the commit was still refused (nonzero exit) but the user
+#     saw a raw Python traceback instead of an actionable message.
+#   * The metrics fields USAGE.md calls "mandatory where shown" (e.g. VETTED's `findings`
+#     block, GREENLIT's `authoring_wallclock_min`) were read via `.get(key, "?")` and never
+#     required — a VETTED line missing `findings` entirely, or with `findings.critical` typoed
+#     as the string `"zero"`, committed cleanly and rendered "?" / "zero" silently in the
+#     dashboard.
+# The dashboard-currency check (ED-008, unchanged below) still catches the case
+# validate-registry.py does NOT try to solve: a syntactically/semantically valid registry
+# whose derived dashboard was never regenerated.
+#
+# Judges the STAGED (to-be-committed) content, not the working tree: it renders from the
+# staged registry blob, so:
+#   * unstaged edits elsewhere in README/registry never cause a false refusal;
+#   * a partial `git add` (registry staged, README not) is judged honestly — and refused,
+#     because the committed dashboard would not match the committed registry.
+# Runs on EVERY commit; cheap (two python invocations, no network).
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+gen_rel="dev/directive-framework/execution-directives/derive-dashboard.py"
+val_rel="dev/directive-framework/execution-directives/validate-registry.py"
+reg_rel="dev/directives/directives.jsonl"
+readme_rel="dev/directive-framework/README.md"
+gen="$repo_root/$gen_rel"
+val="$repo_root/$val_rel"
+
+# Framework/generator not present in this checkout — nothing to gate.
+[ -f "$gen" ] || exit 0
+# Registry not tracked (nothing in the index) — nothing to gate.
+git cat-file -e ":$reg_rel" 2>/dev/null || exit 0
+# Registry is tracked but the README dashboard host is not — cannot render a gate.
+if ! git cat-file -e ":$readme_rel" 2>/dev/null; then
+  echo "pre-commit: $reg_rel is staged/tracked but $readme_rel is not — cannot gate the dashboard." >&2
+  exit 1
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+git show ":$reg_rel"    > "$tmp/registry"
+git show ":$readme_rel" > "$tmp/README.md"
+cp "$tmp/README.md" "$tmp/README.orig"
+
+# ED-012: validate the staged registry's schema BEFORE attempting to render it. Runs only
+# if the validator ships in this checkout (older clones without ED-012 applied skip it; the
+# currency check below still runs and still catches gross malformation via load()'s die()).
+if [ -f "$val" ]; then
+  if ! val_err="$(python3 "$val" --registry "$tmp/registry" 2>&1 >/dev/null)"; then
+    echo "pre-commit: the staged registry FAILED schema validation — commit refused." >&2
+    echo "$val_err" >&2
+    exit 1
+  fi
+fi
+
+# Render from the STAGED registry into the STAGED README copy. The generator exits 2 and
+# writes nothing on a malformed/empty registry or a missing/duplicated marker pair; treat
+# that as a hard fail — a broken source-of-truth line must not enter history unnoticed.
+if ! err="$(python3 "$gen" --registry "$tmp/registry" --readme "$tmp/README.md" 2>&1 >/dev/null)"; then
+  echo "pre-commit: ED dashboard generator failed on the staged registry — commit refused." >&2
+  echo "$err" >&2
+  exit 1
+fi
+
+# If rendering changed the staged README copy, the staged dashboard is stale.
+if ! cmp -s "$tmp/README.md" "$tmp/README.orig"; then
+  echo "pre-commit: the staged ED dashboard is STALE (does not match the staged registry)." >&2
+  echo "Regenerate it and stage the result, then re-commit:" >&2
+  echo "  python3 $gen_rel && git add -- $readme_rel" >&2
+  exit 1
+fi
+
+# ED-043: registry<->tree drift detection, AFTER the currency check. Judges the staged
+# registry against the tree's ED files/dashboard/canon. $tmp/README.md was just
+# re-rendered from the staged registry and cmp-verified equal to the staged README, so
+# passing it as --readme judges staged content, not a scratch artifact. Runs only if the
+# detector ships in this checkout (older clones skip it, like the ED-012 validator above).
+drift_rel="dev/directive-framework/execution-directives/detect-drift.py"
+drift="$repo_root/$drift_rel"
+if [ -f "$drift" ]; then
+  if ! drift_out="$(python3 "$drift" --registry "$tmp/registry" --readme "$tmp/README.md" 2>&1)"; then
+    echo "pre-commit: ED registry<->tree drift detected -- commit refused." >&2
+    echo "$drift_out" >&2
+    echo "Adjudicate the drift (see $drift_rel header); detection is read-only." >&2
+    exit 1
+  fi
+fi
+
+exit 0
