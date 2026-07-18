@@ -1,5 +1,8 @@
 # Directive Framework
 
+*An end-to-end application-building framework for agent-driven design, coding, and review —
+available in an interactive HiTL mode and a headless, fully autonomous agent-driven mode.*
+
 End-goal: an end-to-end build pipeline that takes a half-baked idea in and produces a
 high-quality, intelligently designed, well-executed deliverable — with no-bullshit phase
 boundaries in between. The guiding asymptote (a direction, not a claimed state): work
