@@ -80,6 +80,7 @@ MIN_ENFORCE = {
     "ed-probes-complete": "hard",
     "ed-manifest-floor": "hard",
     "ed-checklist-run": "hard",
+    "ed-full-shape": "hard",
     "ed-chain-walkback": "hard",
     "ed-vetted-before-greenlit": "hard",
     "ed-latest-greenlit": "hard",
@@ -409,6 +410,19 @@ def check_ed_checklist_run(ctx):
         raise CheckFail(f"{cands[0]} frontmatter 'checklist-run:' is missing/empty — "
                         f"the CHECKLIST.md walk must be recorded before greenlight")
     return f"checklist-run recorded: {val!r}"
+
+
+def check_ed_full_shape(ctx):
+    cands = _ed_md_candidates(ctx)
+    if len(cands) != 1: raise CheckFail("cannot locate a unique directive for FULL-shape validation")
+    path = os.path.join(ctx["ed_dir"], cands[0]); fm = parse_frontmatter(path)
+    if fm.get("tier") != "FULL": return "tier is not FULL — full-shape contract not required"
+    text = open(path, encoding="utf-8").read()
+    missing = [f"# {n}." for n in range(1,9) if f"# {n}." not in text]
+    if fm.get("format") == "v2" and "# 0." not in text: missing.insert(0,"# 0.")
+    if missing: raise CheckFail(f"{cands[0]} tier FULL is missing required section heading(s): {', '.join(missing)}")
+    if "Success" not in text or "Smoke" not in text: raise CheckFail(f"{cands[0]} tier FULL must state Success criteria and Smoke plan")
+    return "FULL directive sections and success/smoke markers present"
 
 
 def check_ed_chain_walkback(ctx):
@@ -1154,6 +1168,7 @@ CHECKS = {
     "ed-probes-complete": check_ed_probes_complete,
     "ed-manifest-floor": check_ed_manifest_floor,
     "ed-checklist-run": check_ed_checklist_run,
+    "ed-full-shape": check_ed_full_shape,
     "ed-chain-walkback": check_ed_chain_walkback,
     "ed-vetted-before-greenlit": check_ed_vetted_before_greenlit,
     "ed-latest-greenlit": check_ed_latest_greenlit,
