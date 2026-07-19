@@ -2,8 +2,11 @@
 id: ED-XXX
 title: <one-line objective>
 tier: FULL            # FULL | CEREMONY — authoring capacity decides and states it
+format: v2            # v2 ships the chain-walkback + intent-chunk synthesis contract (EXECUTION-SPEC.md). Omit / v1 for legacy apply-only EDs.
 status: DESIGN        # mirror of the latest directives.jsonl line, informational only
 created: <ISO8601 UTC>
+author:               # the authoring capacity (fable). Must differ from every consumed VD author (execution-intake vd-dd-consumption) and from the coder.
+chain-walkback:       # v2 REQUIRED: traced lineage "VD-NNN -> DD-NNN[,DD-NNN…] -> PD-NNN[,PD-NNN…]" (presence gated at execution-intake; shape and truth audited at B10)
 checklist-run:        # "<date>, <result>" — appended after the CHECKLIST.md walk
 review-channel:       # model/channel that performed cross-vet (see CROSS-VET.md pinning)
 canon-refs:           # settled decisions this ED touches, if the project keeps a ledger
@@ -14,8 +17,19 @@ related:               # optional — see USAGE.md "Related artifacts"; list of 
      aid in flat directories (e.g. ED-042-vlanid-fix.md). The `id:` field above is the
      primary key everywhere (directives.jsonl, cross-references) — the slug is cosmetic. -->
 
-<!-- CEREMONY tier: keep frontmatter + sections 1, 7, and 8 only. State what is being
-     done, why it is trivial, and what it must not touch. One paragraph. Done. -->
+<!-- CEREMONY tier: keep frontmatter + sections 0 (if v2), 1, 7, and 8 only. State what is
+     being done, why it is trivial, the traced chain, and what it must not touch. Done. -->
+
+# 0. Chain walk-back
+
+<!-- v2 REQUIRED (skip only for v1/apply-only EDs). Trace this ED back to the validated
+     plan it executes: which VD it consumes, which DDs that VD packaged, which PDs decided
+     those DDs, and one line on why this ED is the faithful execution of that plan. The
+     `chain-walkback:` frontmatter key is the machine-checkable form of this same trace;
+     the two must agree. Truth is audited at B10 — this section is the presence half. -->
+
+This ED consumes `VD-NNN`, which packaged `DD-NNN, DD-NNN` (decided by `PD-NNN, PD-NNN`).
+One line: why this directive is the faithful execution of that validated plan.
 
 # 1. Objective & success criteria
 
@@ -52,6 +66,16 @@ retypes code out of the ED body. List every file and its purpose:
 
 | File in ED-XXX.files/ | Applies to | Purpose |
 |---|---|---|
+
+**Synthesis EDs (`format: v2`, written not applied):** decompose the implementation into
+ordered **intent-separated chunks** (one coherent purpose per chunk — never split by line
+count or file boundary; see `execution-directives/EXECUTION-SPEC.md`). For each chunk give:
+
+| Chunk | Intent (one purpose) | Coding instruction (architecture `file:line` + formatting) | Dry-run smoke (optional) |
+|---|---|---|---|
+
+The coder is handed one chunk at a time; author ≠ coder; the GREENLIT registry line is the
+sign-off. Apply EDs (`copy`/`append` only, no coder) may omit the chunk table.
 
 Transcription-risk strings — the few values the executor must genuinely type (CLI args,
 launch constants, IDs not shipped in files). Flag each: "this exact string, verbatim":

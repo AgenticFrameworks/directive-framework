@@ -19,6 +19,13 @@ Ladder context (`gates/GATES-SPEC.md`): advisory < soft-gate (blocking, recovera
 hard-gate < strict-hard. A strict-hard gate has no discretionary waiver — the only path
 through is satisfying every check.
 
+> **Note (B7/B7a boundary).** B7 (ED-008) ships these execution rails — the graduated
+> `cursor-phase-match` (hard) and the new format-gated `ed-chain-walkback`. Flipping
+> `tools/executor-run.sh` to actually CALL this runner at execution intake is **B7a/ED-009**
+> (an out-of-band atomic-rename cutover, self-overwrite hazard), NOT this ED. ED-008 is
+> built by the un-flipped glue, which never invokes execution-intake — so graduating these
+> checks is bootstrap-safe (ED-008's own build never runs this gate against itself).
+
 ```gate-spec
 {"gate": "execution-intake",
  "strength": "strict-hard",
@@ -64,8 +71,11 @@ through is satisfying every check.
     "desc": "cursor is not role=coder with an active directive (no build in flight)",
     "enforce": "hard"},
    {"id": "cursor-phase-match",
-    "desc": "cursor phase vs gate boundary (report-only in B4; graduates with B7)",
-    "enforce": "report"}
+    "desc": "cursor phase must sit at the source (validation) or destination (execution) of this boundary — graduated report->hard at B7",
+    "enforce": "hard"},
+   {"id": "ed-chain-walkback",
+    "desc": "if the ED md is format: v2, frontmatter carries a non-empty chain-walkback: (v1/absent passes) — presence+schema only, truth audited at B10",
+    "enforce": "hard"}
  ]}
 ```
 
@@ -113,8 +123,15 @@ through is satisfying every check.
 6. **Cursor sanity.** `cursor.json` validates via the canonical
    `validate-cursor.py <path/to/cursor.json>` (exit 0/2); and the cursor must not show
    `role=coder` with a non-null `active_directive` (a build in flight owns the cursor).
-   Phase-match is `report` in B4 — bootstrap-era cursors legitimately sit mid-pipeline;
-   it graduates to enforce when B7 flips the executor onto this runner.
+   Phase-match is now **hard** (graduated report->hard at B7): the cursor phase must sit
+   at `validation` (this boundary's source) or `execution` (its destination); an
+   off-pipeline phase BLOCKs.
+7. **Chain walk-back (`ed-chain-walkback`, format-gated).** If the ED's directive md
+   carries `format: v2` frontmatter, it must also carry a non-empty `chain-walkback:`
+   key tracing the VD->DD->PD chain (presence + schema only; the traced chain's TRUTH is
+   audited at B10, like the completeness attestation). A v1/absent-format ED predates the
+   contract and passes with a note — ED-008 itself is authored v1 and passes here. See
+   `execution-directives/EXECUTION-SPEC.md`.
 
 Run: `python3 tools/gate-runner.py gates/execution-intake.md --id ED-NNN [--project DIR]`
 Exit 0 PASS / 2 BLOCK (this gate has no soft checks; any error is fail-closed BLOCK).

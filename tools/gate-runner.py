@@ -58,9 +58,44 @@ BOUNDARY_RE = re.compile(r"^(planning|design|validation|execution|review)->"
 STRENGTHS = {"soft-gate", "hard-gate", "strict-hard"}
 ENFORCE = {"hard", "soft", "report"}
 
-# Open execution states — an ED whose latest registry state is one of these is not
-# closed (everything closed = VERIFIED, or paper-only DESIGN/VETTED).
-OPEN_EXECUTION_STATES = {"GREENLIT", "BUILT-GREEN", "BUILT-RED", "REOPENED"}
+# Enforce-level FLOOR per live check (B7, ED-005 F1 — DOWNGRADE vector): a template
+# carrying one of these cids at an enforce BELOW its floor is a BLOCK — a canon
+# template must not silently DOWNGRADE a shipped check (report<soft<hard). Seeded
+# from the LIVE enforce levels at B7. (OMISSION — a live check dropped from a
+# template it belongs to — needs a check->gate registry the runner does not have;
+# scoped OUT here and deferred, recorded in ED-008 §4.)
+ENFORCE_RANK = {"report": 0, "soft": 1, "hard": 2}
+MIN_ENFORCE = {
+    "pd-dd-pairing": "soft",
+    "pd-frontmatter-template": "soft",
+    "dd-frontmatter-template": "soft",
+    "dd-status-settled": "soft",
+    "dd-ordering-dag": "soft",
+    "dd-waived-or-consumed": "soft",
+    "ed-id-shape": "hard",
+    "ed-md-exactly-one": "hard",
+    "ed-launch-exists": "hard",
+    "ed-package-nonempty": "hard",
+    "ed-probes-complete": "hard",
+    "ed-manifest-floor": "hard",
+    "ed-checklist-run": "hard",
+    "ed-chain-walkback": "hard",
+    "ed-vetted-before-greenlit": "hard",
+    "ed-latest-greenlit": "hard",
+    "cursor-valid": "hard",
+    "cursor-not-mid-build": "hard",
+    "cursor-phase-match": "hard",
+    "vd-dd-consumption": "hard",
+    "vd-attestation-present": "hard",
+    "no-open-execution": "hard",
+}
+
+# Closed / not-open execution states (ALLOWLIST, fail-closed): an ED whose LATEST
+# registry state is NOT one of these counts as an OPEN execution — including any
+# unknown/missing state (B7, ED-004 gpt MED: flipped from a denylist so a novel
+# state can never read as closed). Closed = VERIFIED (fully done) or paper-stage
+# DESIGN/VETTED.
+CLOSED_EXECUTION_STATES = {"DESIGN", "VETTED", "VERIFIED"}
 
 # Sanctioned deferrals: check id -> boundary that instantiates it. A `deferred`
 # entry whose id is not here (or names a different boundary) is a BLOCK.
@@ -141,6 +176,11 @@ def validate_spec(spec, path):
         if c.get("enforce") not in ENFORCE:
             raise GateError(f"{path}: checks[{i}] ({cid}) 'enforce' must be one of "
                             f"{sorted(ENFORCE)}, got {c.get('enforce')!r}")
+        floor = MIN_ENFORCE.get(cid)
+        if floor is not None and ENFORCE_RANK[c["enforce"]] < ENFORCE_RANK[floor]:
+            raise GateError(f"{path}: check {cid!r} carries enforce={c['enforce']!r} "
+                            f"below its floor {floor!r} — a template cannot DOWNGRADE "
+                            f"a live check (fail-closed, ED-005 F1)")
         deferred = c.get("deferred")
         if deferred is not None:
             if not isinstance(deferred, str) or not deferred:
@@ -370,6 +410,40 @@ def check_ed_checklist_run(ctx):
     return f"checklist-run recorded: {val!r}"
 
 
+def check_ed_chain_walkback(ctx):
+    cands = _ed_md_candidates(ctx)
+    if len(cands) != 1:
+        raise CheckFail(f"cannot locate a unique directive file to read frontmatter "
+                        f"from (got {cands!r}) — fix ed-md-exactly-one first")
+    fm = parse_frontmatter(os.path.join(ctx["ed_dir"], cands[0]))
+    fmt = fm.get("format", "").strip()
+    if fmt in ("", "v1"):
+        # FORMAT-GATED: v1/absent EDs predate the chain-walkback contract — PASS
+        # with a note (v1 EDs shipped before EXECUTION-SPEC; the key is not retro-
+        # required). ED-008 itself is authored v1 and passes here.
+        return (f"{cands[0]} is format={fmt or '(absent)'} (v1) — chain-walkback "
+                f"not required (PASS with note)")
+    if fmt != "v2":
+        # B7 cross-vet C1 (fail-closed): an unrecognized non-empty format must NOT
+        # silently downgrade to v1 — a `format: V2` / `format: 2` typo would skip
+        # this hard gate entirely. The only valid values are absent/v1 or v2; any
+        # other is a defect, not a v1 pass.
+        raise CheckFail(f"{cands[0]} carries an unrecognized format={fmt!r} — a "
+                        f"directive is either v1 (absent format) or exactly "
+                        f"'format: v2'; an unknown format cannot silently skip "
+                        f"ed-chain-walkback (fail-closed); see "
+                        f"execution-directives/EXECUTION-SPEC.md")
+    val = fm.get("chain-walkback", "")
+    if not val:
+        raise CheckFail(f"{cands[0]} is format: v2 but frontmatter "
+                        f"'chain-walkback:' is missing/empty — a v2 ED must record "
+                        f"the traced chain (e.g. 'VD-001 -> DD-001,DD-002 -> "
+                        f"PD-001,PD-002'); see execution-directives/EXECUTION-SPEC.md")
+    # PRESENCE + schema only; the traced chain's TRUTH is audited at B10, like the
+    # completeness attestation.
+    return f"chain-walkback recorded (format: v2): {val!r}"
+
+
 def check_ed_vetted_before_greenlit(ctx):
     ed_id = require_id(ctx)
     hist = load_registry(ctx).get(ed_id, [])
@@ -379,10 +453,21 @@ def check_ed_vetted_before_greenlit(ctx):
     if "GREENLIT" not in states:
         raise CheckFail(f"no GREENLIT line for {ed_id} (history: {states})")
     last_greenlit = len(states) - 1 - states[::-1].index("GREENLIT")
-    if "VETTED" not in states[:last_greenlit]:
+    vetted_before = [i for i, s in enumerate(states[:last_greenlit]) if s == "VETTED"]
+    if not vetted_before:
         raise CheckFail(f"no VETTED line precedes the latest GREENLIT for {ed_id} "
                         f"(history: {states}) — cross-vet is not optional")
-    return "VETTED precedes the latest GREENLIT"
+    # B7 (ED-004 LOW-1): a REOPENED invalidates any prior vet — the VETTED that
+    # clears the latest GREENLIT must come AFTER the last REOPENED, else a stale
+    # pre-reopen vet would wave a reopened+re-greenlit ED through unreviewed.
+    if "REOPENED" in states:
+        last_reopened = len(states) - 1 - states[::-1].index("REOPENED")
+        if not any(i > last_reopened for i in vetted_before):
+            raise CheckFail(f"latest GREENLIT for {ed_id} is not preceded by a "
+                            f"VETTED line AFTER the last REOPENED (history: "
+                            f"{states}) — a reopened directive needs a FRESH "
+                            f"cross-vet, not a pre-reopen one")
+    return "VETTED precedes the latest GREENLIT (fresh vs any REOPENED)"
 
 
 def check_ed_latest_greenlit(ctx):
@@ -445,10 +530,20 @@ def check_cursor_not_mid_build(ctx):
 
 def check_cursor_phase_match(ctx, spec=None):
     d = _read_cursor(ctx)
+    phase = d.get("phase")
     boundary = (spec or {}).get("boundary", "?->?")
-    return (f"cursor phase={d.get('phase')!r} vs boundary {boundary!r} "
-            f"(report-only in B4: bootstrap-era cursors legitimately sit mid-pipeline; "
-            f"graduates to enforce with B7)")
+    m = BOUNDARY_RE.fullmatch(boundary)
+    if not m:
+        raise CheckFail(f"cursor-phase-match needs a phase->phase boundary from the "
+                        f"gate-spec, got {boundary!r}")
+    src, dst = m.group(1), m.group(2)
+    if phase not in (src, dst):
+        raise CheckFail(f"cursor phase={phase!r} is off this boundary {boundary!r} "
+                        f"— the transition is valid only while the cursor sits at "
+                        f"its source ({src}) or destination ({dst}) phase (B7: "
+                        f"graduated from report to hard)")
+    return (f"cursor phase={phase!r} matches boundary {boundary!r} "
+            f"(at {'source' if phase == src else 'destination'})")
 
 
 def check_pd_dd_pairing(ctx):
@@ -554,6 +649,19 @@ def _load_packet_spec(kind):
     req = spec.get("required")
     if not isinstance(req, dict) or not req:
         raise GateError(f"{path}: packet-spec 'required' must be a non-empty object")
+    # B7 (ED-005 HIGH-1): a kind-aware required-key FLOOR — reject a canon template
+    # that DROPS a floor key so it can't silently weaken the check. PD/DD carry the
+    # pair twin; VD has no twin but must keep its consumption/independence keys.
+    FLOOR = {
+        "PD": {"id", "pair", "status", "created"},
+        "DD": {"id", "pair", "status", "created"},
+        "VD": {"id", "status", "created", "author", "consumes", "parallelism"},
+    }
+    missing_floor = FLOOR.get(kind, set()) - set(req)
+    if missing_floor:
+        raise GateError(f"{path}: packet-spec 'required' drops floor key(s) "
+                        f"{sorted(missing_floor)} for {kind} — a canon template "
+                        f"cannot silently weaken the check (fail-closed)")
     compiled = {}
     for key, pattern in req.items():
         if not isinstance(pattern, str) or not pattern:
@@ -630,15 +738,36 @@ def check_dd_frontmatter_template(ctx):
 # append/validate-registry line contract is NOT evolved by B6.
 
 def _scan_packets(ctx, kind, dirkey):
-    """[(name, serial), ...] of KIND-NNN packets; [] when the dir is absent."""
+    """[(name, serial), ...] of KIND-NNN packets; [] when the dir is absent.
+
+    Memoized per (kind, dirkey) in ctx["_packet_cache"] so every check in ONE gate
+    run shares one snapshot (B7, GPT-2 ED-007: closes the per-check rescan TOCTOU
+    with no signature change). A duplicate serial (e.g. VD-001.md + VD-001.z.md)
+    raises CheckFail (B7, GPT-1 ED-007): consumers key by serial (vd_authors[vid],
+    edges, consumes) so a later scan silently OVERWRITES the earlier packet's
+    author/ordering — author-independence evasion + silent merge. Rejecting here
+    closes the deliberate AND the accidental stray-backup path for every consumer."""
+    cache = ctx.setdefault("_packet_cache", {})
+    key = (kind, dirkey)
+    if key in cache:
+        return cache[key]
     dirpath = ctx[dirkey]
     if not os.path.isdir(dirpath):
+        cache[key] = []
         return []
-    out = []
+    out, seen = [], {}
     for name in scan_md(dirpath):
         m = SERIAL_RE.fullmatch(name)
         if m and m.group(1) == kind:
-            out.append((name, m.group(2)))
+            serial = m.group(2)
+            if serial in seen:
+                raise CheckFail(f"duplicate {kind} serial {kind}-{serial}: "
+                                f"{seen[serial]!r} and {name!r} — one serial, one "
+                                f"packet (a stray same-serial file silently "
+                                f"overwrites author/consumes/ordering by serial)")
+            seen[serial] = name
+            out.append((name, serial))
+    cache[key] = out
     return out
 
 
@@ -907,13 +1036,14 @@ def check_no_open_execution(ctx):
     history = load_registry(ctx)
     open_eds = []
     for did, hist in sorted(history.items()):
-        if ED_ID_RE.fullmatch(did) and hist[-1].get("state") in OPEN_EXECUTION_STATES:
+        if ED_ID_RE.fullmatch(did) and hist[-1].get("state") not in CLOSED_EXECUTION_STATES:
             open_eds.append(f"{did}={hist[-1].get('state')}")
     if open_eds:
         raise CheckFail("execution is not closed — review intake requires every ED "
-                        "latest state outside {GREENLIT, BUILT-GREEN, BUILT-RED, "
-                        "REOPENED}; open: " + ", ".join(open_eds))
-    return "no ED in an open execution state (everything VERIFIED or paper-stage)"
+                        "latest state within the closed allowlist {DESIGN, VETTED, "
+                        "VERIFIED} (any other/unknown state counts as OPEN, "
+                        "fail-closed); open: " + ", ".join(open_eds))
+    return "no ED in an open execution state (every ED VERIFIED or paper-stage)"
 
 
 CHECKS = {
@@ -924,6 +1054,7 @@ CHECKS = {
     "ed-probes-complete": check_ed_probes_complete,
     "ed-manifest-floor": check_ed_manifest_floor,
     "ed-checklist-run": check_ed_checklist_run,
+    "ed-chain-walkback": check_ed_chain_walkback,
     "ed-vetted-before-greenlit": check_ed_vetted_before_greenlit,
     "ed-latest-greenlit": check_ed_latest_greenlit,
     "cursor-valid": check_cursor_valid,
@@ -939,6 +1070,12 @@ CHECKS = {
     "vd-attestation-present": check_vd_attestation_present,
     "no-open-execution": check_no_open_execution,
 }
+
+
+# Checks that need the gate-spec (for its boundary) as a 2nd arg. B7: graduating
+# cursor-phase-match to a blocking enforce level routes it through the ENFORCE
+# branch, which must now also pass spec — a single set drives BOTH branches.
+WANTS_SPEC = {"cursor-phase-match"}
 
 
 # ----------------------------------------------------------------------- modes
@@ -958,13 +1095,13 @@ def run_gate(template, project, directive_id):
         if c["enforce"] == "report":
             # report never affects exit — even a crashed report check only prints
             try:
-                detail = fn(ctx, spec) if cid == "cursor-phase-match" else fn(ctx)
+                detail = fn(ctx, spec) if cid in WANTS_SPEC else fn(ctx)
                 print(f"gate-runner: [REPORT] {cid} — {detail}")
             except (CheckFail, GateError) as exc:
                 print(f"gate-runner: [REPORT] {cid} — could not evaluate: {exc}")
             continue
         try:
-            detail = fn(ctx)
+            detail = fn(ctx, spec) if cid in WANTS_SPEC else fn(ctx)
         except CheckFail as exc:
             level = c["enforce"]
             (hard_fails if level == "hard" else soft_fails).append(cid)
