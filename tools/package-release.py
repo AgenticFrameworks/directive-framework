@@ -1,13 +1,50 @@
 #!/usr/bin/env python3
-import hashlib, pathlib, tarfile
-root=pathlib.Path(__file__).resolve().parents[1]; out=root/'dist'; out.mkdir(exist_ok=True)
-allow=['AUTO-HANDOFF-SPEC.md','EXECUTOR-SPEC.md','RUNTIME-SPEC.md','README.md','LICENSE','gates','tools','planning-directives','validation-directives','review-directives','execution-directives','.claude-plugin','portable']
-files=[]
-for x in allow:
- p=root/x
- if p.is_file(): files.append(p)
- elif p.is_dir(): files += [q for q in p.rglob('*') if q.is_file() and '__pycache__' not in q.parts]
-t=out/'directive-framework-v1.1.tar.gz'
-with tarfile.open(t,'w:gz',format=tarfile.PAX_FORMAT) as z:
- for p in sorted(files): z.add(p,arcname=str(pathlib.Path('directive-framework')/p.relative_to(root)),recursive=False)
-print(t,hashlib.sha256(t.read_bytes()).hexdigest())
+"""Build a reproducible, allowlisted directive-framework release archive."""
+import gzip
+import hashlib
+import io
+import pathlib
+import tarfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+OUT = ROOT / "dist"
+ALLOW = [
+    "AUTO-HANDOFF-SPEC.md", "EXECUTOR-SPEC.md", "RUNTIME-SPEC.md", "README.md", "LICENSE",
+    "gates", "tools", "planning-directives", "validation-directives", "review-directives",
+    "execution-directives", ".claude-plugin", "portable", "tests",
+]
+EXCLUDED_PARTS = {"__pycache__", ".git", "dist", "_directives", "_archive"}
+
+
+def files():
+    result = []
+    for item in ALLOW:
+        path = ROOT / item
+        if path.is_file():
+            result.append(path)
+        elif path.is_dir():
+            result.extend(p for p in path.rglob("*") if p.is_file()
+                          and not (set(p.relative_to(ROOT).parts) & EXCLUDED_PARTS))
+    return sorted(result, key=lambda p: p.relative_to(ROOT).as_posix())
+
+
+def main():
+    OUT.mkdir(exist_ok=True)
+    archive = OUT / "directive-framework-v1.1.0.tar.gz"
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for path in files():
+            info = tar.gettarinfo(str(path), arcname=f"directive-framework/{path.relative_to(ROOT)}")
+            info.uid = info.gid = info.mtime = 0
+            info.uname = info.gname = ""
+            with open(path, "rb") as source:
+                tar.addfile(info, source)
+    with open(archive, "wb") as dest:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=dest, mtime=0) as gz:
+            gz.write(raw.getvalue())
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    (OUT / "directive-framework-v1.1.0.sha256").write_text(f"{digest}  {archive.name}\n")
+    print(archive, digest)
+
+if __name__ == "__main__":
+    main()
