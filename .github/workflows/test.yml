@@ -1,0 +1,10 @@
+name: test
+on: [push, pull_request]
+jobs:
+  canon:
+    runs-on: ubuntu-latest
+    permissions: {contents: read, id-token: write}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/test-canon.sh
+      - run: python3 tools/package-release.py
