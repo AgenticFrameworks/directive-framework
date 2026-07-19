@@ -145,6 +145,16 @@ append_state() {  # json-line
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# ---- 2b. Strict-hard intake gate (B7a/ED-009 flip): the executor now calls the real
+# gate-runner execution-intake (the 15-check VD->ED + ED-dual strict-hard gate), not just
+# the bash floor above. The cursor is first advanced to phase=execution (this boundary's
+# destination) as role=orchestrator, so cursor-phase-match (execution) and
+# cursor-not-mid-build (not coder) both PASS; only on a gate PASS do we assume role=coder.
+set_cursor execution orchestrator null || die "cursor advance to execution/orchestrator failed before intake gate"
+python3 "$CANON/tools/gate-runner.py" "$CANON/gates/execution-intake.md" --id "$ID" --project "$PROJ" \
+    || die "refusing $ID: execution-intake strict-hard gate did not PASS (fail-closed) — fix the intake and re-run"
+echo "executor-run: execution-intake gate PASS — proceeding to build"
+
 # ---- 3. Cursor: coder on duty — release GUARANTEED on every exit path from here
 # on via EXIT trap (double-final-review defect: append_state failure post-smoke left
 # the cursor stuck at coder). TERM/INT routed through EXIT so a timeout kill releases too.
