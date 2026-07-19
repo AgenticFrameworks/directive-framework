@@ -184,20 +184,19 @@ def main():
     root = os.path.abspath(os.path.join(here, "..", "..", ".."))
     ap = argparse.ArgumentParser(
         description="read-only ED registry<->tree drift detector (ED-043)")
-    ap.add_argument("--runtime-dir", default=os.path.join(root, "dev", "directives"))
+    ap.add_argument("--runtime-dir", default=os.path.abspath(os.path.join(here, "..", "_directives")))
     ap.add_argument("--registry", default=None,
-                    help="default: <runtime-dir>/directives.jsonl")
+                    help="default: <runtime-dir>/registry.jsonl")
     ap.add_argument("--readme",
-                    default=os.path.join(root, "dev", "directive-framework", "README.md"))
+                    default=os.path.abspath(os.path.join(here, "..", "_directives", "dashboard.md")))
     ap.add_argument("--canon-dir", default=here,
                     help="dir holding derive-dashboard.py + canon files")
     ap.add_argument("--portable-dir",
-                    default=os.path.join(root, "dev", "directive-framework",
-                                         "portable", "ed", "canon"))
+                    default=os.path.abspath(os.path.join(here, "..", "portable", "ed", "canon")))
     ap.add_argument("--strict", action="store_true",
                     help="count WARN findings as ERROR for the exit code")
     args = ap.parse_args()
-    registry = args.registry or os.path.join(args.runtime_dir, "directives.jsonl")
+    registry = args.registry or os.path.join(args.runtime_dir, "registry.jsonl")
     if not os.path.isdir(args.runtime_dir):
         op_fail(f"runtime dir not found: {args.runtime_dir}")
 

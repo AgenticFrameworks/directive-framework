@@ -189,7 +189,7 @@ def render(eds, nlines, m):
         "# ED Framework Metrics (derived)",
         "",
         f"{len(eds)} directives, {nlines} registry lines, latest ledger change {latest}.",
-        "Source of truth: `dev/directives/directives.jsonl`. "
+        "Source of truth: `_directives/registry.jsonl`. "
         "Regenerate: `python3 execution-directives/derive-metrics.py`.",
         "",
         "## Phase latency (first file-order occurrence per boundary; BUILT-GREEN/RED collapse to BUILT)",
@@ -246,12 +246,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--registry", default=os.path.abspath(
-        os.path.join(here, "..", "..", "directives", "directives.jsonl")))
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(here), "METRICS.md"),
-                    help="derived metrics file (default: dev/directive-framework/METRICS.md)")
+        os.path.join(here, "..", "_directives", "registry.jsonl")))
+    ap.add_argument("--out", default=None,
+                    help="derived metrics file (default: METRICS.md next to the registry)")
     ap.add_argument("--no-write", action="store_true",
                     help="print the report to stdout only; touch nothing on disk")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = os.path.join(os.path.dirname(os.path.abspath(args.registry)), "METRICS.md")
     eds, nlines = load(args.registry)
     text = render(eds, nlines, compute(eds))
     print(text)

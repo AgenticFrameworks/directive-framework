@@ -173,7 +173,7 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--registry", default=os.path.abspath(
-        os.path.join(here, "..", "..", "directives", "directives.jsonl")))
+        os.path.join(here, "..", "_directives", "registry.jsonl")))
     args = ap.parse_args()
     errors = validate_registry(args.registry)
     if errors:

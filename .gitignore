@@ -181,3 +181,9 @@ idea.md
 case-study-odo-bootstrap.md
 cleanup.md
 handoffs/
+.aider*
+
+# --- ED-001: per-project directive runtime (clean-canon rule) ---
+# Canon holds templates + spec ONLY; all directive instances/registry/cursor live in
+# the per-project _directives/ runtime, which is never tracked in the canon repo.
+_directives/
