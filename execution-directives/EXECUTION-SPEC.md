@@ -44,13 +44,18 @@ Every `format: v2` directive opens — before objective, before context — with
 packaged and the PDs those DDs decided. It appears in two places, which must agree:
 
 - **Frontmatter** `chain-walkback:` — the trace, conventionally a single line of ids:
-  `VD-NNN -> DD-NNN[,DD-NNN…] -> PD-NNN[,PD-NNN…]`. Its **presence** (a non-empty value
-  on a `format: v2` ED) is enforced at execution-intake (`ed-chain-walkback`, hard); the
-  trace's *shape and truth* — that it parses as that id chain, that those DDs are the
-  ones the VD actually consumes, and those PDs their real pairs — are audited at B10
-  (review phase), exactly like the completeness attestation is presence-checked at B7
-  and truth-audited at B10. (A machine-checked shape assertion at B7 is a recorded
-  hardening-backlog enhancement for a future ED; the B7 gate is presence-only today.)
+  `VD-NNN -> DD-NNN[,DD-NNN…] -> PD-NNN[,PD-NNN…]`. Both its **presence** (a non-empty
+  value on a `format: v2` ED) and its **shape** are enforced at execution-intake
+  (`ed-chain-walkback`, hard). The shape grammar (machine-checked since ED-011): the
+  value is `->`-separated **segments**, each a comma-list of well-formed `(VD|DD|PD)-NNN`
+  refs (three digits); at least one segment, at least one ref per segment, no empty
+  segment (a leading/trailing/double `->` is a malformed chain, not a trace). The
+  trace's *truth* — that those ids exist, that those DDs are the ones the VD actually
+  consumes, those PDs their real pairs, and the segments run in pipeline order — is still
+  audited at B10 (review phase), exactly like the completeness attestation is
+  presence-checked at B7 and truth-audited at B10. The gate asserts the chain is
+  *well-formed*, never that it is *true*; a syntactically valid but factually wrong chain
+  passes intake and is caught at B10.
 - **Section `# 0. Chain walk-back`** — the same chain in prose: which VD, which DDs it
   packaged, which PDs decided them, and one line on why this ED is the faithful
   execution of that validated plan. This is the human-readable half of the same fact.
@@ -106,7 +111,7 @@ the launch prompt; the author is the orchestrator (Fable). The separation is not
 | Check | Gate | Enforce | Asserts |
 |---|---|---|---|
 | `cursor-phase-match` | `gates/execution-intake.md` | hard | cursor phase sits at this boundary's source (`validation`) or destination (`execution`); an off-pipeline phase BLOCKs (graduated report→hard at B7) |
-| `ed-chain-walkback` | `gates/execution-intake.md` | hard | if the ED md is `format: v2`, frontmatter carries a non-empty `chain-walkback:`; a v1/absent-format ED passes with a note — presence + schema only, truth audited at B10 |
+| `ed-chain-walkback` | `gates/execution-intake.md` | hard | if the ED md is `format: v2`, frontmatter carries a non-empty `chain-walkback:` that parses as `->`-separated segments of `(VD|DD|PD)-NNN` comma-lists; a v1/absent-format ED passes with a note — presence + **shape** (ED-011), truth audited at B10 |
 
 Both checks are format- and phase-gated presence checks, deterministic and fail-closed.
 The synthesis mechanics they front (intent-chunk hand-off, per-chunk coding instructions)
@@ -122,6 +127,25 @@ bootstrap-class and self-overwrites via `cp`, a hazard an in-band manifest apply
 safely carry). ED-008 ships the rails — the graduated `cursor-phase-match` and the new
 `ed-chain-walkback` — but is itself built by the un-flipped glue, which never invokes
 execution-intake, so graduating these checks is bootstrap-safe.
+
+## Packet-scan integrity (per-run content snapshot, ED-011)
+
+The intake gates read VD/DD packets many times in one run — one check tallies the
+authors, another walks the `consumes:` edges, a third resolves the `after:` ordering.
+`_scan_packets` memoizes the packet **list** per `(kind, dir)` so every check in one gate
+run shares a single file-set snapshot (the list-TOCTOU close, ED-007). ED-011 closes the
+matching **content** TOCTOU: at first scan each packet's `sha256` is snapshotted into an
+in-memory sidecar; every later (memoized) read of that packet set re-hashes the same files
+and **fails closed** if any packet's bytes drifted — an author flipped, a `consumes:`
+rewritten, or a packet deleted — between the first check that read it and a later check
+that re-parses it. One gate run therefore sees exactly one immutable packet set, in name
+*and* in content.
+
+The snapshot is purely in-memory (no artifact is written — canon purity is untouched) and
+rides a sidecar dict, not the `_scan_packets` return value, so the `(name, serial)` tuple
+contract every consumer unpacks is unchanged. Like the list-TOCTOU close it fronts, this is
+a defense against mid-run mutation, not a cross-run guarantee: what changes *between*
+distinct gate invocations is out of scope (that is the registry/cursor's job).
 
 ## Exit codes
 

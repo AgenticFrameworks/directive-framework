@@ -40,6 +40,7 @@ attestation check asserts PRESENCE+schema of registry attest keys only — never
 truth (B10 audits).
 """
 
+import hashlib
 import json
 import os
 import re
@@ -439,7 +440,30 @@ def check_ed_chain_walkback(ctx):
                         f"'chain-walkback:' is missing/empty — a v2 ED must record "
                         f"the traced chain (e.g. 'VD-001 -> DD-001,DD-002 -> "
                         f"PD-001,PD-002'); see execution-directives/EXECUTION-SPEC.md")
-    # PRESENCE + schema only; the traced chain's TRUTH is audited at B10, like the
+    # ED-011 (GPT-1): machine-check the SHAPE of the trace, not just its presence.
+    # A v2 ED whose chain-walkback: is `foo` or `VD1->` passed the non-empty check
+    # above yet records no parseable lineage — the presence gate is satisfied by any
+    # noise. Enforce the grammar: '->'-separated segments, each a comma-list of
+    # well-formed (VD|DD|PD)-NNN refs; >=1 segment, >=1 ref per segment. This is
+    # SHAPE only — that these specific ids exist, are the VD's real consumes: DDs and
+    # their real PD pairs, and run in pipeline order is the traced chain's TRUTH,
+    # still audited at B10 (mirrors how the presence check defers truth today). No
+    # existence / pipeline-order check happens here.
+    segments = [seg.strip() for seg in val.split("->")]
+    if not segments or any(not seg for seg in segments):
+        raise CheckFail(f"{cands[0]} chain-walkback {val!r} is malformed — expected "
+                        f"'->'-separated segments (e.g. 'VD-001 -> DD-001,DD-002 -> "
+                        f"PD-001'); an empty segment (leading/trailing/double '->') is "
+                        f"not a traced chain; see execution-directives/EXECUTION-SPEC.md")
+    for seg in segments:
+        refs = [r.strip() for r in seg.split(",")]
+        for ref in refs:
+            if not re.fullmatch(r"(?:VD|DD|PD)-[0-9]{3}", ref):
+                raise CheckFail(f"{cands[0]} chain-walkback {val!r} has a malformed "
+                                f"ref {ref!r} — every id must be (VD|DD|PD)-NNN "
+                                f"(three digits); see "
+                                f"execution-directives/EXECUTION-SPEC.md")
+    # SHAPE + presence only; the traced chain's TRUTH is audited at B10, like the
     # completeness attestation.
     return f"chain-walkback recorded (format: v2): {val!r}"
 
@@ -737,6 +761,15 @@ def check_dd_frontmatter_template(ctx):
 # never truth (B10 audits); the keys ride on a valid state line — the
 # append/validate-registry line contract is NOT evolved by B6.
 
+def _file_sha256(path):
+    """sha256 hexdigest of a file's raw bytes (streamed, no full-file buffer)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def _scan_packets(ctx, kind, dirkey):
     """[(name, serial), ...] of KIND-NNN packets; [] when the dir is absent.
 
@@ -746,16 +779,31 @@ def _scan_packets(ctx, kind, dirkey):
     raises CheckFail (B7, GPT-1 ED-007): consumers key by serial (vd_authors[vid],
     edges, consumes) so a later scan silently OVERWRITES the earlier packet's
     author/ordering — author-independence evasion + silent merge. Rejecting here
-    closes the deliberate AND the accidental stray-backup path for every consumer."""
+    closes the deliberate AND the accidental stray-backup path for every consumer.
+
+    ED-011 (GPT-2, content TOCTOU-close): the memo above pins the file *list* for a
+    run, but a packet's *bytes* could still be swapped between the first check that
+    reads it and a later check that re-parses it (author flipped, consumes rewritten)
+    — the list is stable while the content drifts. So at first scan we snapshot each
+    packet's sha256 into a sidecar ctx["_packet_hashes"][key] = {name: digest}; every
+    memoized return re-hashes the same packets from disk and CheckFails on any drift
+    (a byte change, or a packet that vanished mid-run). IN-MEMORY only, symmetric with
+    the list-TOCTOU close above — no artifact is written, so canon purity is untouched.
+    The digest rides a SIDECAR dict, not the returned tuple: the (name, serial) return
+    contract is unchanged, so none of the ~8 consumers that unpack `for name, serial in
+    packets` are perturbed — the integrity check is fully internal to the scan."""
     cache = ctx.setdefault("_packet_cache", {})
+    hashes = ctx.setdefault("_packet_hashes", {})
     key = (kind, dirkey)
     if key in cache:
+        _verify_packet_content(ctx, kind, dirkey, cache[key], hashes[key])
         return cache[key]
     dirpath = ctx[dirkey]
     if not os.path.isdir(dirpath):
         cache[key] = []
+        hashes[key] = {}
         return []
-    out, seen = [], {}
+    out, seen, digests = [], {}, {}
     for name in scan_md(dirpath):
         m = SERIAL_RE.fullmatch(name)
         if m and m.group(1) == kind:
@@ -767,8 +815,29 @@ def _scan_packets(ctx, kind, dirkey):
                                 f"overwrites author/consumes/ordering by serial)")
             seen[serial] = name
             out.append((name, serial))
+            digests[name] = _file_sha256(os.path.join(dirpath, name))
     cache[key] = out
+    hashes[key] = digests
     return out
+
+
+def _verify_packet_content(ctx, kind, dirkey, packets, snapshot):
+    """Re-hash the memoized KIND packets and CheckFail if any bytes drifted from the
+    first-scan snapshot within this gate run (ED-011 GPT-2 content TOCTOU-close)."""
+    dirpath = ctx[dirkey]
+    for name, _serial in packets:
+        path = os.path.join(dirpath, name)
+        try:
+            now = _file_sha256(path)
+        except FileNotFoundError:
+            raise CheckFail(f"{kind} packet {name!r} was present at first scan but "
+                            f"is gone on re-read — a packet vanished mid-gate-run "
+                            f"(content TOCTOU); one gate run sees one packet set")
+        if now != snapshot[name]:
+            raise CheckFail(f"{kind} packet {name!r} changed on disk within one gate "
+                            f"run (sha256 {snapshot[name][:12]}… -> {now[:12]}…) — a "
+                            f"packet's bytes drifted mid-run (content TOCTOU); "
+                            f"author/consumes/ordering must be stable across a run")
 
 
 def _parse_id_list(value, kind):
