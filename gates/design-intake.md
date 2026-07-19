@@ -14,11 +14,11 @@ advisory < soft-gate (blocking, recoverable) < hard-gate < strict-hard.
     "desc": "every DD-NNN in _directives/DD has a shared-serial PD-NNN in _directives/PD",
     "enforce": "soft"},
    {"id": "pd-frontmatter-template",
-    "desc": "every PD packet validates against the PD template frontmatter",
-    "enforce": "soft", "deferred": "B5"},
+    "desc": "every PD packet validates against the canon PD-TEMPLATE packet-spec",
+    "enforce": "soft"},
    {"id": "dd-frontmatter-template",
-    "desc": "every DD packet validates against the DD template frontmatter",
-    "enforce": "soft", "deferred": "B5"}
+    "desc": "every DD packet validates against the canon DD-TEMPLATE packet-spec",
+    "enforce": "soft"}
  ]}
 ```
 
@@ -31,9 +31,17 @@ advisory < soft-gate (blocking, recoverable) < hard-gate < strict-hard.
    bounces it back to planning. A PD without a DD is planning-in-progress and does not
    block. An empty `DD/` passes with a note (a project may enter design with zero
    settled decisions recorded — the validation gate is where substance is enforced).
-2. **PD/DD frontmatter shape (deferred to B5).** The PD/DD templates ship with B5
-   (planning slice); until then these checks print `DEFERRED(B5)` — visibly deferred,
-   never silently passed.
+2. **PD/DD frontmatter shape (`pd-frontmatter-template` / `dd-frontmatter-template`,
+   live as of B5).** Every `PD-NNN*.md` / `DD-NNN*.md` packet validates against the
+   fenced ```packet-spec contract in the CANON planning templates
+   (`planning-directives/PD-TEMPLATE.md` / `DD-TEMPLATE.md`, resolved from the
+   runner's own location): required frontmatter keys present and matching their
+   declared patterns (`re.fullmatch`), plus the RUNTIME-SPEC shared-serial contract
+   in code (`id` agrees with the filename serial, `pair` carries the same serial).
+   A packet violation BOUNCES (soft — fix the packet, re-run). A missing or
+   malformed canon template BLOCKS (runner error, fail-closed — canon is
+   incomplete; see `planning-directives/PLANNING-SPEC.md`). Non-packet files in
+   `PD/`/`DD/` are ignored, same conservative posture as `pd-dd-pairing`.
 
 Run: `python3 tools/gate-runner.py gates/design-intake.md [--project DIR]`
 Exit 0 PASS / 1 BOUNCE (fix packets, re-run) / 2 BLOCK (runner/template/cursor error).

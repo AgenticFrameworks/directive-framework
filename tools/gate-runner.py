@@ -25,11 +25,13 @@ Check semantics:
     deferred:"BN"   printed as DEFERRED(BN), never pass/fail silently; only ids in
                     the sanctioned deferral registry may carry `deferred` — deferring
                     a live check id is itself a BLOCK (a template must not be able to
-                    silently disable a shipped check)
+                    silently DEFER a shipped check)
 
 Gates go LIVE at later boundaries (B6 wires design/validation flow, B7 flips the
 executor to call this runner); B4 ships the framework only, so nothing here is
-invoked by tools/executor-run.sh yet.
+invoked by tools/executor-run.sh yet. B5 (ED-005) instantiated the planning packet
+checks pd/dd-frontmatter-template: live in gates/design-intake.md, validating
+packets against the canon planning-directives/(PD|DD)-TEMPLATE.md packet-spec.
 """
 
 import json
@@ -57,8 +59,6 @@ OPEN_EXECUTION_STATES = {"GREENLIT", "BUILT-GREEN", "BUILT-RED", "REOPENED"}
 # Sanctioned deferrals: check id -> boundary that instantiates it. A `deferred`
 # entry whose id is not here (or names a different boundary) is a BLOCK.
 KNOWN_DEFERRED = {
-    "pd-frontmatter-template": "B5",
-    "dd-frontmatter-template": "B5",
     "vd-dd-consumption": "B6",
     "vd-attestation-present": "B6",
     "dd-ordering-dag": "B6",
@@ -490,6 +490,126 @@ def check_dd_status_settled(ctx):
     return f"{len(names)} DD packet(s), all status: settled"
 
 
+# Packet-template enforcement (ED-005, B5): the canon planning templates carry a
+# fenced ```packet-spec JSON block — {"packet": "PD"|"DD", "required": {key: regex}}.
+# Canon-template problems are GateError (BLOCK: canon incomplete/malformed, fail-
+# closed); packet violations are CheckFail (enforce=soft in design-intake -> BOUNCE).
+
+def extract_packet_spec(path):
+    """First fenced code block tagged `packet-spec` -> parsed JSON, or GateError.
+
+    Deliberately PARALLEL to extract_gate_spec, not shared: validate_templates
+    classifies doc files by the gate-spec error text (a known message-coupling),
+    so the gate-spec extractor stays byte-untouched (ED-005 §4)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError as exc:
+        raise GateError(f"cannot read canon template {path}: {exc} (fail-closed)")
+    block, in_block = [], False
+    for line in lines:
+        stripped = line.strip()
+        if not in_block and stripped == "```packet-spec":
+            in_block = True
+            continue
+        if in_block:
+            if stripped == "```":
+                break
+            block.append(line)
+    else:
+        if in_block:
+            raise GateError(f"{path}: unterminated ```packet-spec fence")
+        raise GateError(f"{path}: no ```packet-spec fenced block found "
+                        "(machine-readable contract, "
+                        "planning-directives/PLANNING-SPEC.md)")
+    try:
+        return json.loads("\n".join(block))
+    except json.JSONDecodeError as exc:
+        raise GateError(f"{path}: packet-spec block is not valid JSON: {exc.msg} "
+                        f"(line {exc.lineno} of the block)")
+
+
+def _load_packet_spec(kind):
+    """Canon planning-directives/<kind>-TEMPLATE.md -> {key: compiled regex}.
+
+    Resolved from CANON (the runner's own location, same precedent as
+    check_cursor_valid) — never from the consuming project. Every malformation
+    is GateError: a broken canon contract must BLOCK, never read as a packet
+    problem (which would BOUNCE, understating the failure)."""
+    path = os.path.join(CANON, "planning-directives", f"{kind}-TEMPLATE.md")
+    if not os.path.isfile(path):
+        raise GateError(f"canon template missing: {path} — canon incomplete "
+                        f"(fail-closed)")
+    spec = extract_packet_spec(path)
+    if not isinstance(spec, dict) or spec.get("packet") != kind:
+        got = spec.get("packet") if isinstance(spec, dict) else spec
+        raise GateError(f"{path}: packet-spec 'packet' must be {kind!r}, got {got!r}")
+    req = spec.get("required")
+    if not isinstance(req, dict) or not req:
+        raise GateError(f"{path}: packet-spec 'required' must be a non-empty object")
+    compiled = {}
+    for key, pattern in req.items():
+        if not isinstance(pattern, str) or not pattern:
+            raise GateError(f"{path}: required[{key!r}] must be a non-empty "
+                            f"regex string")
+        try:
+            compiled[key] = re.compile(pattern)
+        except re.error as exc:
+            raise GateError(f"{path}: required[{key!r}] is not a valid regex: {exc}")
+    return compiled
+
+
+def _check_packets_frontmatter(ctx, kind, dirkey):
+    # canon template loads FIRST: a broken canon contract must BLOCK even when
+    # the project has no packets yet (fail-closed before the cheap PASS-with-note)
+    required = _load_packet_spec(kind)
+    dirpath = ctx[dirkey]
+    if not os.path.isdir(dirpath):
+        return f"no _directives/{kind} dir — nothing to check (PASS with note)"
+    packets = []
+    for name in scan_md(dirpath):
+        m = SERIAL_RE.fullmatch(name)
+        if m and m.group(1) == kind:
+            packets.append((name, m.group(2)))
+    if not packets:
+        return f"{kind}/ has no {kind}-NNN packets — nothing to check (PASS with note)"
+    other = "PD" if kind == "DD" else "DD"
+    errs = []
+    for name, serial in packets:
+        fm = parse_frontmatter(os.path.join(dirpath, name))
+        if not fm:
+            errs.append(f"{name}: no frontmatter block")
+            continue
+        for key, rx in required.items():
+            val = fm.get(key)
+            if val is None or val == "":
+                errs.append(f"{name}: missing required key '{key}'")
+            elif not rx.fullmatch(val):
+                errs.append(f"{name}: {key}={val!r} does not fullmatch "
+                            f"/{rx.pattern}/")
+        # RUNTIME-SPEC shared-serial contract, enforced in code (not per-template):
+        # id agrees with the filename serial; pair carries the same serial
+        fm_id = fm.get("id")
+        if fm_id is not None and fm_id != f"{kind}-{serial}":
+            errs.append(f"{name}: id={fm_id!r} != filename serial {kind}-{serial}")
+        fm_pair = fm.get("pair")
+        if fm_pair is not None and fm_pair != f"{other}-{serial}":
+            errs.append(f"{name}: pair={fm_pair!r} != shared-serial {other}-{serial} "
+                        f"(RUNTIME-SPEC naming table)")
+    if errs:
+        raise CheckFail(f"packet(s) violate the canon {kind}-TEMPLATE packet-spec: "
+                        + "; ".join(errs))
+    return f"{len(packets)} {kind} packet(s) validate against canon {kind}-TEMPLATE.md"
+
+
+def check_pd_frontmatter_template(ctx):
+    return _check_packets_frontmatter(ctx, "PD", "pd_dir")
+
+
+def check_dd_frontmatter_template(ctx):
+    return _check_packets_frontmatter(ctx, "DD", "dd_dir")
+
+
 def check_no_open_execution(ctx):
     history = load_registry(ctx)
     open_eds = []
@@ -517,6 +637,8 @@ CHECKS = {
     "cursor-not-mid-build": check_cursor_not_mid_build,
     "cursor-phase-match": check_cursor_phase_match,
     "pd-dd-pairing": check_pd_dd_pairing,
+    "pd-frontmatter-template": check_pd_frontmatter_template,
+    "dd-frontmatter-template": check_dd_frontmatter_template,
     "dd-status-settled": check_dd_status_settled,
     "no-open-execution": check_no_open_execution,
 }
