@@ -89,3 +89,41 @@ Every `GREENLIT` line carries `go_basis` (`human:<name>`, `delegated:<basis>`,
 `envelope:<version>`) — enforced by `validate-registry.py` for lines after
 2026-07-12. The executor refuses anything not greenlit, so authority is checkable
 end-to-end from the registry alone.
+
+## Cursor pre-position contract (ED-010)
+
+Shipped by ED-010 (boundary B7a follow-up). The intake gate (step 2b) restores the
+cursor family's teeth for the executor path: `tools/executor-run.sh` no longer
+pre-advances the cursor to `execution`/`orchestrator` before calling
+`gate-runner.py gates/execution-intake.md`. The gate now tests the **incoming** cursor —
+`cursor-valid`, `cursor-not-mid-build`, `cursor-phase-match` are live for this caller,
+not structurally vacuous as under the ED-009 flip.
+
+**The orchestrator MUST pre-position the cursor before invoking the executor.** Before
+running `bash tools/executor-run.sh ED-NNN [--project DIR]`, the cursor
+(`_directives/cursor.json`) must satisfy ALL of:
+
+- `phase` ∈ {`validation`, `execution`} — the source or destination of the
+  `validation->execution` boundary. Any other phase BLOCKs at `cursor-phase-match`.
+- `role` = `orchestrator` (not `coder`) and `active_directive` = `null` — no build in
+  flight. A mid-build cursor (`role=coder` with a non-null `active_directive`) BLOCKs at
+  `cursor-not-mid-build`.
+- schema-valid per `tools/validate-cursor.py`.
+
+Land the cursor there with the sanctioned phase writer `tools/cursor-phase.py` (which
+resets `postpones_used` on a phase change) — pre-positioning at `execution` makes the
+executor's step-3 `set_cursor execution coder` a pure role flip, matching the invariant
+that the executor's own `set_cursor` only flips role within `phase=execution`. Pre-positioning
+at `validation` (the boundary source) is also legal; the executor's step-3 then performs the
+`validation->execution` phase write itself (harmless — `postpones_used` is not consumed
+during a build).
+
+On a gate PASS the executor assumes `role=coder`, applies + smokes, and releases the cursor
+to `execution`/`orchestrator`/`null` on every exit path (EXIT trap). On a gate BLOCK it
+refuses fail-closed (exit 2, "execution-intake strict-hard gate did not PASS") and never
+assumes `coder`.
+
+**Back-compat:** a cursor already at `execution`/`orchestrator`/`null` (the state the ED-009
+flip force-wrote) still PASSes — the contract is a superset of the ED-009 self-advance target,
+so pre-positioning there works under both the ED-009 and ED-010 executors during the attended
+promotion window.

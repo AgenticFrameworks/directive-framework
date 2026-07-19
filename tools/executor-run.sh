@@ -145,12 +145,14 @@ append_state() {  # json-line
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# ---- 2b. Strict-hard intake gate (B7a/ED-009 flip): the executor now calls the real
-# gate-runner execution-intake (the 15-check VD->ED + ED-dual strict-hard gate), not just
-# the bash floor above. The cursor is first advanced to phase=execution (this boundary's
-# destination) as role=orchestrator, so cursor-phase-match (execution) and
-# cursor-not-mid-build (not coder) both PASS; only on a gate PASS do we assume role=coder.
-set_cursor execution orchestrator null || die "cursor advance to execution/orchestrator failed before intake gate"
+# ---- 2b. Strict-hard intake gate (ED-010: gate the INCOMING cursor). The executor calls
+# the real gate-runner execution-intake (the 15-check VD->ED + ED-dual strict-hard gate),
+# not just the bash floor above. Unlike the ED-009 flip, the executor no longer pre-advances
+# the cursor before the gate — the orchestrator PRE-POSITIONS it at phase=validation (this
+# boundary's source) or phase=execution (its destination), role=orchestrator, active=null,
+# per EXECUTOR-SPEC "Cursor pre-position contract", BEFORE invoking this script. The gate now
+# tests THAT incoming cursor with teeth restored: cursor-valid, cursor-not-mid-build (no build
+# in flight), cursor-phase-match (on-boundary). Only on a gate PASS does step 3 assume coder.
 python3 "$CANON/tools/gate-runner.py" "$CANON/gates/execution-intake.md" --id "$ID" --project "$PROJ" \
     || die "refusing $ID: execution-intake strict-hard gate did not PASS (fail-closed) — fix the intake and re-run"
 echo "executor-run: execution-intake gate PASS — proceeding to build"
