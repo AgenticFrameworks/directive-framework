@@ -50,7 +50,7 @@ import sys
 CANON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ED_ID_RE = re.compile(r"ED-[0-9]{3}")
-SERIAL_RE = re.compile(r"^(DD|PD|VD)-([0-9]{3})(?:[.-].*)?\.md$")
+SERIAL_RE = re.compile(r"^(DD|PD|VD|RD)-([0-9]{3})(?:[.-].*)?\.md$")
 BOUNDARY_RE = re.compile(r"^(planning|design|validation|execution|review)->"
                          r"(design|validation|execution|review)$")
 
@@ -89,6 +89,7 @@ MIN_ENFORCE = {
     "vd-dd-consumption": "hard",
     "vd-attestation-present": "hard",
     "no-open-execution": "hard",
+    "rd-packet-shape": "hard",
 }
 
 # Closed / not-open execution states (ALLOWLIST, fail-closed): an ED whose LATEST
@@ -100,9 +101,7 @@ CLOSED_EXECUTION_STATES = {"DESIGN", "VETTED", "VERIFIED"}
 
 # Sanctioned deferrals: check id -> boundary that instantiates it. A `deferred`
 # entry whose id is not here (or names a different boundary) is a BLOCK.
-KNOWN_DEFERRED = {
-    "rd-packet-shape": "B9",
-}
+KNOWN_DEFERRED = {}
 
 
 class GateError(Exception):
@@ -213,6 +212,7 @@ def make_ctx(project, directive_id):
         "dd_dir": os.path.join(root, "_directives", "DD"),
         "pd_dir": os.path.join(root, "_directives", "PD"),
         "vd_dir": os.path.join(root, "_directives", "VD"),
+        "rd_dir": os.path.join(root, "_directives", "RD"),
     }
 
 
@@ -661,7 +661,7 @@ def _load_packet_spec(kind):
     precedent as check_cursor_valid) — never from the consuming project. Every
     malformation is GateError: a broken canon contract must BLOCK, never read
     as a packet problem (which would BOUNCE, understating the failure)."""
-    subdir = "validation-directives" if kind == "VD" else "planning-directives"
+    subdir = {"VD": "validation-directives", "RD": "review-directives"}.get(kind, "planning-directives")
     path = os.path.join(CANON, subdir, f"{kind}-TEMPLATE.md")
     if not os.path.isfile(path):
         raise GateError(f"canon template missing: {path} — canon incomplete "
@@ -680,6 +680,7 @@ def _load_packet_spec(kind):
         "PD": {"id", "pair", "status", "created"},
         "DD": {"id", "pair", "status", "created"},
         "VD": {"id", "status", "created", "author", "consumes", "parallelism"},
+        "RD": {"id", "status", "created", "author", "kind", "reviews", "verdict"},
     }
     missing_floor = FLOOR.get(kind, set()) - set(req)
     if missing_floor:
@@ -1101,6 +1102,36 @@ def check_vd_attestation_present(ctx):
         + " via append-registry.py")
 
 
+def check_rd_packet_shape(ctx):
+    """Validate final Review Directive packets against the canon RD template (B9)."""
+    required = _load_packet_spec("RD")
+    packets = _scan_packets(ctx, "RD", "rd_dir")
+    if not packets:
+        return "no RD-NNN packets — review may begin; nothing to validate yet (PASS with note)"
+    known_eds = set(load_registry(ctx))
+    errs = []
+    for name, serial in packets:
+        fm = parse_frontmatter(os.path.join(ctx["rd_dir"], name))
+        rid = f"RD-{serial}"
+        if not fm:
+            errs.append(f"{name}: no frontmatter block")
+            continue
+        for key, rx in required.items():
+            val = fm.get(key)
+            if val is None or val == "":
+                errs.append(f"{name}: missing required key {key!r}")
+            elif not rx.fullmatch(val):
+                errs.append(f"{name}: {key}={val!r} does not fullmatch /{rx.pattern}/")
+        if fm.get("id") is not None and fm["id"] != rid:
+            errs.append(f"{name}: id={fm['id']!r} != filename serial {rid}")
+        for ref in [x.strip() for x in fm.get("reviews", "").split(",") if x.strip()]:
+            if ref not in known_eds:
+                errs.append(f"{name}: reviews {ref} which has no registry history")
+    if errs:
+        raise CheckFail("RD packet(s) violate the canon RD-TEMPLATE packet-spec: " + "; ".join(errs))
+    return f"{len(packets)} RD packet(s) validate against canon RD-TEMPLATE.md"
+
+
 def check_no_open_execution(ctx):
     history = load_registry(ctx)
     open_eds = []
@@ -1138,6 +1169,7 @@ CHECKS = {
     "vd-dd-consumption": check_vd_dd_consumption,
     "vd-attestation-present": check_vd_attestation_present,
     "no-open-execution": check_no_open_execution,
+    "rd-packet-shape": check_rd_packet_shape,
 }
 
 
