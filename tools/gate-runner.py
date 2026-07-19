@@ -27,11 +27,17 @@ Check semantics:
                     a live check id is itself a BLOCK (a template must not be able to
                     silently DEFER a shipped check)
 
-Gates go LIVE at later boundaries (B6 wires design/validation flow, B7 flips the
-executor to call this runner); B4 ships the framework only, so nothing here is
-invoked by tools/executor-run.sh yet. B5 (ED-005) instantiated the planning packet
-checks pd/dd-frontmatter-template: live in gates/design-intake.md, validating
-packets against the canon planning-directives/(PD|DD)-TEMPLATE.md packet-spec.
+Gates go LIVE at later boundaries (B7 flips the executor to call this runner);
+B4 ships the framework only, so nothing here is invoked by tools/executor-run.sh
+yet. B5 (ED-005) instantiated the planning packet checks
+pd/dd-frontmatter-template: live in gates/design-intake.md, validating packets
+against the canon planning-directives/(PD|DD)-TEMPLATE.md packet-spec. B6
+(ED-007) instantiated the validation slice: dd-ordering-dag and
+dd-waived-or-consumed live in gates/validation-intake.md; vd-dd-consumption and
+vd-attestation-present live in gates/execution-intake.md, validating VD packets
+against the canon validation-directives/VD-TEMPLATE.md packet-spec. The
+attestation check asserts PRESENCE+schema of registry attest keys only — never
+truth (B10 audits).
 """
 
 import json
@@ -43,7 +49,7 @@ import sys
 CANON = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ED_ID_RE = re.compile(r"ED-[0-9]{3}")
-SERIAL_RE = re.compile(r"^(DD|PD)-([0-9]{3})(?:[.-].*)?\.md$")
+SERIAL_RE = re.compile(r"^(DD|PD|VD)-([0-9]{3})(?:[.-].*)?\.md$")
 BOUNDARY_RE = re.compile(r"^(planning|design|validation|execution|review)->"
                          r"(design|validation|execution|review)$")
 
@@ -59,10 +65,6 @@ OPEN_EXECUTION_STATES = {"GREENLIT", "BUILT-GREEN", "BUILT-RED", "REOPENED"}
 # Sanctioned deferrals: check id -> boundary that instantiates it. A `deferred`
 # entry whose id is not here (or names a different boundary) is a BLOCK.
 KNOWN_DEFERRED = {
-    "vd-dd-consumption": "B6",
-    "vd-attestation-present": "B6",
-    "dd-ordering-dag": "B6",
-    "dd-waived-or-consumed": "B6",
     "rd-packet-shape": "B9",
 }
 
@@ -169,6 +171,7 @@ def make_ctx(project, directive_id):
         "ed_dir": os.path.join(root, "_directives", "ED"),
         "dd_dir": os.path.join(root, "_directives", "DD"),
         "pd_dir": os.path.join(root, "_directives", "PD"),
+        "vd_dir": os.path.join(root, "_directives", "VD"),
     }
 
 
@@ -473,21 +476,23 @@ def check_pd_dd_pairing(ctx):
 
 
 def check_dd_status_settled(ctx):
-    if not os.path.isdir(ctx["dd_dir"]):
-        return "no _directives/DD dir — nothing to check (PASS with note)"
-    names = scan_md(ctx["dd_dir"])
-    if not names:
-        return "DD/ is empty — nothing to check (PASS with note)"
-    unsettled = []
-    for name in names:
+    # B6 (ED-007): accepts the closed vocabulary settled/waived/consumed that
+    # DD-TEMPLATE reserved; scans only DD-NNN packets (SERIAL_RE), not stray
+    # *.md — closing the B5 hardening-backlog scan-alignment item.
+    packets = _scan_packets(ctx, "DD", "dd_dir")
+    if not packets:
+        return "no DD-NNN packets in _directives/DD — nothing to check (PASS with note)"
+    open_dds = []
+    for name, _serial in packets:
         fm = parse_frontmatter(os.path.join(ctx["dd_dir"], name))
         status = fm.get("status", "(missing)")
-        if status != "settled":
-            unsettled.append(f"{name}: status={status}")
-    if unsettled:
-        raise CheckFail("every DD must carry frontmatter 'status: settled' before "
-                        "validation intake; offenders: " + "; ".join(unsettled))
-    return f"{len(names)} DD packet(s), all status: settled"
+        if status not in ("settled", "waived", "consumed"):
+            open_dds.append(f"{name}: status={status}")
+    if open_dds:
+        raise CheckFail("every DD must carry frontmatter status settled/waived/"
+                        "consumed before validation intake; offenders: "
+                        + "; ".join(open_dds))
+    return f"{len(packets)} DD packet(s), all status settled/waived/consumed"
 
 
 # Packet-template enforcement (ED-005, B5): the canon planning templates carry a
@@ -530,13 +535,15 @@ def extract_packet_spec(path):
 
 
 def _load_packet_spec(kind):
-    """Canon planning-directives/<kind>-TEMPLATE.md -> {key: compiled regex}.
+    """Canon <subdir>/<kind>-TEMPLATE.md -> {key: compiled regex}.
 
-    Resolved from CANON (the runner's own location, same precedent as
-    check_cursor_valid) — never from the consuming project. Every malformation
-    is GateError: a broken canon contract must BLOCK, never read as a packet
-    problem (which would BOUNCE, understating the failure)."""
-    path = os.path.join(CANON, "planning-directives", f"{kind}-TEMPLATE.md")
+    VD resolves from validation-directives/ (ED-007, B6); PD/DD from
+    planning-directives/. Resolved from CANON (the runner's own location, same
+    precedent as check_cursor_valid) — never from the consuming project. Every
+    malformation is GateError: a broken canon contract must BLOCK, never read
+    as a packet problem (which would BOUNCE, understating the failure)."""
+    subdir = "validation-directives" if kind == "VD" else "planning-directives"
+    path = os.path.join(CANON, subdir, f"{kind}-TEMPLATE.md")
     if not os.path.isfile(path):
         raise GateError(f"canon template missing: {path} — canon incomplete "
                         f"(fail-closed)")
@@ -610,6 +617,292 @@ def check_dd_frontmatter_template(ctx):
     return _check_packets_frontmatter(ctx, "DD", "dd_dir")
 
 
+# Validation-slice checks (ED-007, B6): dd-ordering-dag / dd-waived-or-consumed
+# (gates/validation-intake.md, soft) and vd-dd-consumption /
+# vd-attestation-present (gates/execution-intake.md, hard). VD packets live in
+# _directives/VD/ and validate against the canon
+# validation-directives/VD-TEMPLATE.md packet-spec via _load_packet_spec
+# (GateError fail-closed, even on packet-empty projects). VDs have NO pair twin
+# — their cross-refs are consumes: DD ids — so they deliberately do NOT go
+# through _check_packets_frontmatter (which hardcodes the PD/DD pairing). The
+# attestation check asserts PRESENCE + schema of the registry attest keys only,
+# never truth (B10 audits); the keys ride on a valid state line — the
+# append/validate-registry line contract is NOT evolved by B6.
+
+def _scan_packets(ctx, kind, dirkey):
+    """[(name, serial), ...] of KIND-NNN packets; [] when the dir is absent."""
+    dirpath = ctx[dirkey]
+    if not os.path.isdir(dirpath):
+        return []
+    out = []
+    for name in scan_md(dirpath):
+        m = SERIAL_RE.fullmatch(name)
+        if m and m.group(1) == kind:
+            out.append((name, m.group(2)))
+    return out
+
+
+def _parse_id_list(value, kind):
+    """Single-line comma list 'DD-001, DD-002' -> ids; ValueError on a bad ref
+    (parse_frontmatter is line-scoped, so multi-line lists cannot occur)."""
+    ids = []
+    for part in value.split(","):
+        ref = part.strip()
+        if not re.fullmatch(kind + "-[0-9]{3}", ref):
+            raise ValueError(f"malformed {kind} ref {ref!r} "
+                             f"(expected a comma list of {kind}-NNN)")
+        ids.append(ref)
+    return ids
+
+
+def _dag_or_fail(edges, what):
+    """edges: {node: set(prerequisite nodes)} — Kahn-style resolve loop;
+    CheckFail naming the residual cycle members when the ordering is no DAG."""
+    pending = {n: set(deps) for n, deps in edges.items() if deps}
+    resolved = set(edges) - set(pending)
+    while pending:
+        ready = [n for n, deps in pending.items() if deps <= resolved]
+        if not ready:
+            raise CheckFail(f"{what} ordering is not a DAG — cycle among: "
+                            + ", ".join(sorted(pending)))
+        for n in ready:
+            resolved.add(n)
+            del pending[n]
+
+
+def check_dd_ordering_dag(ctx):
+    packets = _scan_packets(ctx, "DD", "dd_dir")
+    if not packets:
+        return "no DD-NNN packets — nothing to order (PASS with note)"
+    ids = {f"DD-{serial}" for _name, serial in packets}
+    edges, declared, errs = {}, 0, []
+    for name, serial in packets:
+        did = f"DD-{serial}"
+        after = parse_frontmatter(os.path.join(ctx["dd_dir"], name)).get("after")
+        if not after:
+            edges[did] = set()
+            continue
+        declared += 1
+        try:
+            refs = _parse_id_list(after, "DD")
+        except ValueError as exc:
+            errs.append(f"{name}: after: {exc}")
+            edges[did] = set()
+            continue
+        for ref in refs:
+            if ref == did:
+                errs.append(f"{name}: after: self-reference {ref}")
+            elif ref not in ids:
+                errs.append(f"{name}: after: references {ref} which is not a "
+                            f"DD packet on disk")
+        edges[did] = {r for r in refs if r != did and r in ids}
+    if errs:
+        raise CheckFail("DD after: violations: " + "; ".join(errs))
+    if not declared:
+        return (f"{len(packets)} DD packet(s), no after: keys — trivially a "
+                f"DAG (PASS with note)")
+    _dag_or_fail(edges, "DD after:")
+    return f"{len(packets)} DD packet(s), {declared} with after:, ordering is a DAG"
+
+
+def check_dd_waived_or_consumed(ctx):
+    packets = _scan_packets(ctx, "DD", "dd_dir")
+    if not packets:
+        return "no DD-NNN packets — nothing to consume or waive (PASS with note)"
+    errs, dd_status = [], {}
+    for name, serial in packets:
+        fm = parse_frontmatter(os.path.join(ctx["dd_dir"], name))
+        did = f"DD-{serial}"
+        dd_status[did] = fm.get("status", "(missing)")
+        if dd_status[did] == "waived" and not fm.get("waived"):
+            errs.append(f"{name}: status waived requires a non-empty "
+                        f"'waived: <reason>' key")
+    vd_packets = _scan_packets(ctx, "VD", "vd_dir")
+    consumed = set()
+    for name, _serial in vd_packets:
+        consumes = parse_frontmatter(
+            os.path.join(ctx["vd_dir"], name)).get("consumes")
+        if consumes:
+            try:
+                consumed.update(_parse_id_list(consumes, "DD"))
+            except ValueError as exc:
+                # a malformed VD consumes: list propagates — never silently
+                # swallowed as "nothing consumed"
+                errs.append(f"{name}: consumes: {exc}")
+    for did in sorted(dd_status):
+        if dd_status[did] == "consumed" and did not in consumed:
+            errs.append(f"{did}: status consumed but no VD lists it in consumes:")
+    if vd_packets:
+        uncovered = sorted(d for d, s in dd_status.items()
+                           if s != "waived" and d not in consumed)
+        if uncovered:
+            errs.append("DD(s) neither consumed by a VD nor waived: "
+                        + ", ".join(uncovered))
+    if errs:
+        raise CheckFail("waived/consumed violations: " + "; ".join(errs))
+    if not vd_packets:
+        return (f"{len(packets)} DD packet(s), zero VD packets — coverage not "
+                f"yet enforceable here; hard backstop at execution-intake "
+                f"(PASS with note)")
+    return (f"{len(packets)} DD packet(s) all consumed-or-waived across "
+            f"{len(vd_packets)} VD packet(s)")
+
+
+def check_vd_dd_consumption(ctx):
+    # canon VD template loads FIRST: a broken canon contract must BLOCK even
+    # when the project has no packets yet (ED-005 precedent)
+    required = _load_packet_spec("VD")
+    vd_packets = _scan_packets(ctx, "VD", "vd_dir")
+    dd_packets = _scan_packets(ctx, "DD", "dd_dir")
+    if not vd_packets and not dd_packets:
+        return "no DD or VD packets — nothing to package (PASS with note)"
+    errs, dd_status = [], {}
+    for name, serial in dd_packets:
+        fm = parse_frontmatter(os.path.join(ctx["dd_dir"], name))
+        did = f"DD-{serial}"
+        dd_status[did] = fm.get("status", "(missing)")
+        if dd_status[did] == "waived" and not fm.get("waived"):
+            errs.append(f"{name}: status waived without a non-empty "
+                        f"'waived: <reason>' key")
+    vd_ids = {f"VD-{serial}" for _name, serial in vd_packets}
+    vd_authors, consumed, vd_edges = {}, set(), {}
+    for name, serial in vd_packets:
+        vid = f"VD-{serial}"
+        fm = parse_frontmatter(os.path.join(ctx["vd_dir"], name))
+        if not fm:
+            errs.append(f"{name}: no frontmatter block")
+            continue
+        for key, rx in required.items():
+            val = fm.get(key)
+            if val is None or val == "":
+                errs.append(f"{name}: missing required key '{key}'")
+            elif not rx.fullmatch(val):
+                errs.append(f"{name}: {key}={val!r} does not fullmatch "
+                            f"/{rx.pattern}/")
+        fm_id = fm.get("id")
+        if fm_id is not None and fm_id != vid:
+            errs.append(f"{name}: id={fm_id!r} != filename serial {vid}")
+        if fm.get("pair") is not None:
+            errs.append(f"{name}: VD packets have no pair twin — drop 'pair:' "
+                        f"(cross-refs are consumes: DD ids)")
+        if fm.get("status") == "draft":
+            errs.append(f"{name}: status draft — settle the VD before "
+                        f"execution intake")
+        vd_authors[vid] = fm.get("author", "")
+        consumes = fm.get("consumes")
+        if consumes:
+            try:
+                refs = _parse_id_list(consumes, "DD")
+            except ValueError as exc:
+                errs.append(f"{name}: consumes: {exc}")
+                refs = []
+            for ref in refs:
+                if ref not in dd_status:
+                    errs.append(f"{name}: consumes {ref} which is not a DD "
+                                f"packet on disk")
+                elif dd_status[ref] == "waived":
+                    errs.append(f"{name}: consumes {ref} which is waived "
+                                f"(waived-consumed contradiction)")
+                elif dd_status[ref] not in ("settled", "consumed"):
+                    errs.append(f"{name}: consumes {ref} whose status is "
+                                f"{dd_status[ref]!r} (need settled/consumed)")
+            consumed.update(refs)
+        after = fm.get("after")
+        arefs = []
+        if after:
+            try:
+                arefs = _parse_id_list(after, "VD")
+            except ValueError as exc:
+                errs.append(f"{name}: after: {exc}")
+                arefs = []
+            for ref in arefs:
+                if ref == vid:
+                    errs.append(f"{name}: after: self-reference {ref}")
+                elif ref not in vd_ids:
+                    errs.append(f"{name}: after: references {ref} which is "
+                                f"not a VD packet on disk")
+        vd_edges[vid] = {r for r in arefs if r != vid and r in vd_ids}
+    if dd_packets and not vd_packets:
+        errs.append(f"{len(dd_packets)} DD packet(s) but zero VD packets — "
+                    f"the DD set is unpackaged (author VDs before execution "
+                    f"intake)")
+    else:
+        uncovered = sorted(d for d, s in dd_status.items()
+                           if s != "waived" and d not in consumed)
+        if uncovered:
+            errs.append("DD(s) neither consumed by a VD nor waived: "
+                        + ", ".join(uncovered))
+    if vd_packets:
+        # author independence: the operational fresh-context mechanism is the
+        # cursor; the gate checks the RECORDED authors (ED frontmatter vs VD)
+        cands = _ed_md_candidates(ctx)
+        if len(cands) != 1:
+            errs.append(f"cannot locate a unique directive file to read "
+                        f"'author:' from (got {cands!r})")
+        else:
+            ed_author = parse_frontmatter(
+                os.path.join(ctx["ed_dir"], cands[0])).get("author", "")
+            if not ed_author:
+                errs.append(f"{cands[0]}: frontmatter 'author:' missing/empty "
+                            f"— VD/ED author independence unverifiable "
+                            f"(fail-closed)")
+            else:
+                for vid in sorted(vd_authors):
+                    if vd_authors[vid] and vd_authors[vid] == ed_author:
+                        errs.append(f"{vid}: author {vd_authors[vid]!r} == ED "
+                                    f"author — validation must be "
+                                    f"independently authored")
+    if errs:
+        raise CheckFail("VD->ED consumption violations: " + "; ".join(errs))
+    _dag_or_fail(vd_edges, "VD after:")
+    return (f"{len(vd_packets)} VD packet(s) validate against canon "
+            f"VD-TEMPLATE.md; {len(dd_packets)} DD packet(s) all "
+            f"consumed-or-waived; VD authors independent of the ED author")
+
+
+def check_vd_attestation_present(ctx):
+    ed_id = require_id(ctx)
+    if not _scan_packets(ctx, "DD", "dd_dir"):
+        return "no DD-NNN packets — no DD set to attest (PASS with note)"
+    valid, malformed = [], []
+    for d in load_registry(ctx).get(ed_id, []):
+        if "attest" not in d:
+            continue
+        problems = []
+        if d.get("attest") != "dd-set-complete":
+            problems.append(f"attest={d.get('attest')!r} (expected "
+                            f"'dd-set-complete')")
+        basis = d.get("basis")
+        if not isinstance(basis, str) or not basis.strip():
+            problems.append("empty/missing 'basis'")
+        risk = d.get("risk_accepted")
+        if not isinstance(risk, str) or not risk.strip():
+            problems.append("empty/missing 'risk_accepted'")
+        if problems:
+            malformed.append(" + ".join(problems))
+        else:
+            valid.append(d)
+    if valid:
+        note = ""
+        if malformed:
+            note = (f"; {len(malformed)} malformed attest line(s) also "
+                    f"present: " + " | ".join(malformed))
+        return (f"dd-set-complete attestation present for {ed_id} (basis "
+                f"{valid[0].get('basis')!r}; PRESENCE+schema only — truth is "
+                f"audited at B10){note}")
+    detail = ""
+    if malformed:
+        detail = "malformed attest line(s): " + " | ".join(malformed) + " — "
+    raise CheckFail(
+        "no valid dd-set-complete attestation line for " + ed_id + ": " + detail
+        + "the VD author appends the attest keys piggybacked on a valid state "
+          "line, e.g. "
+        + '{"id":"' + ed_id + '","state":"<STATE>","ts":"<UTC now>",'
+          '"attest":"dd-set-complete","basis":"<why the DD set is complete>",'
+          '"risk_accepted":"<residual risk accepted>"}'
+        + " via append-registry.py")
+
+
 def check_no_open_execution(ctx):
     history = load_registry(ctx)
     open_eds = []
@@ -640,6 +933,10 @@ CHECKS = {
     "pd-frontmatter-template": check_pd_frontmatter_template,
     "dd-frontmatter-template": check_dd_frontmatter_template,
     "dd-status-settled": check_dd_status_settled,
+    "dd-ordering-dag": check_dd_ordering_dag,
+    "dd-waived-or-consumed": check_dd_waived_or_consumed,
+    "vd-dd-consumption": check_vd_dd_consumption,
+    "vd-attestation-present": check_vd_attestation_present,
     "no-open-execution": check_no_open_execution,
 }
 
