@@ -1,0 +1,21 @@
+{
+  "name": "@daedalusos/directive-framework-pi",
+  "version": "1.1.0",
+  "description": "Native pi agent fusion of the directive-framework phase-gated pipeline (Planning -> Design -> Validation -> Execution -> Review) with fail-closed phase gates, an append-only registry, fresh-context-per-phase, and parallel lanes with disjoint file footprints.",
+  "keywords": ["pi-package", "directive-framework", "agent-pipeline", "phase-gated"],
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/daedalusos/directive-framework",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/daedalusos/directive-framework.git",
+    "directory": "pi"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  }
+}
