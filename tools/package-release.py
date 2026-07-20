@@ -3,11 +3,15 @@
 import gzip
 import hashlib
 import io
+import json
 import pathlib
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / "dist"
+# Single source of truth for the version: .claude-plugin/plugin.json.
+# Bump it there and the release archive name follows.
+VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["version"]
 ALLOW = [
     "AUTO-HANDOFF-SPEC.md", "EXECUTOR-SPEC.md", "RUNTIME-SPEC.md", "README.md", "LICENSE",
     "gates", "tools", "planning-directives", "validation-directives", "review-directives",
@@ -30,7 +34,7 @@ def files():
 
 def main():
     OUT.mkdir(exist_ok=True)
-    archive = OUT / "directive-framework-v1.1.0.tar.gz"
+    archive = OUT / f"directive-framework-v{VERSION}.tar.gz"
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for path in files():
@@ -43,7 +47,7 @@ def main():
         with gzip.GzipFile(filename="", mode="wb", fileobj=dest, mtime=0) as gz:
             gz.write(raw.getvalue())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (OUT / "directive-framework-v1.1.0.sha256").write_text(f"{digest}  {archive.name}\n")
+    (OUT / f"directive-framework-v{VERSION}.sha256").write_text(f"{digest}  {archive.name}\n")
     print(archive, digest)
 
 if __name__ == "__main__":
