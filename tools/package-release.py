@@ -15,7 +15,7 @@ VERSION = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["ver
 ALLOW = [
     "AUTO-HANDOFF-SPEC.md", "EXECUTOR-SPEC.md", "RUNTIME-SPEC.md", "README.md", "LICENSE",
     "gates", "tools", "planning-directives", "validation-directives", "review-directives",
-    "execution-directives", ".claude-plugin", "portable", "tests",
+    "execution-directives", ".claude-plugin", "portable", "cockpit", "tests",
 ]
 EXCLUDED_PARTS = {"__pycache__", ".git", "dist", "_directives", "_archive"}
 
