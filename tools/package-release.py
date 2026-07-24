@@ -16,6 +16,7 @@ ALLOW = [
     "AUTO-HANDOFF-SPEC.md", "EXECUTOR-SPEC.md", "RUNTIME-SPEC.md", "README.md", "LICENSE",
     "gates", "tools", "planning-directives", "validation-directives", "review-directives",
     "execution-directives", ".claude-plugin", "portable", "cockpit", "tests",
+    "commands", "skills",
 ]
 EXCLUDED_PARTS = {"__pycache__", ".git", "dist", "_directives", "_archive"}
 

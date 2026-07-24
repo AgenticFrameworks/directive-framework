@@ -1,0 +1,23 @@
+{
+  "name": "directive-framework",
+  "owner": {
+    "name": "AgenticFrameworks"
+  },
+  "metadata": {
+    "description": "Phase-gated directive framework: Planning -> Design -> Validation -> Execution -> Review",
+    "version": "1.2.0"
+  },
+  "plugins": [
+    {
+      "name": "directive-framework",
+      "source": ".",
+      "description": "Drive an idea through the phase-gated directive pipeline (Planning -> Design -> Validation -> Execution -> Review) using deterministic intake gates, paired PD/DD planning packets, validated build plans, execution directives, and review directives. Provides the /directives command and a skill wiring the framework's real Python tooling and the planning cockpit.",
+      "version": "1.2.0",
+      "author": {
+        "name": "AgenticFrameworks"
+      },
+      "category": "workflow",
+      "keywords": ["planning", "gates", "execution", "review", "directives", "governance"]
+    }
+  ]
+}

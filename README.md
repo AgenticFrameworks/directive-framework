@@ -21,7 +21,7 @@ It turns an idea into reviewed work through explicit, inspectable artifacts — 
 
 | Surface | Path | Install |
 |---|---|---|
-| Claude Code plugin | `.claude-plugin/` | drop the repo into Claude Code's plugin dir |
+| Claude Code plugin | `.claude-plugin/`, `commands/`, `skills/` | `claude plugin marketplace add <repo>` then `claude plugin install directive-framework@directive-framework` (provides the `/directives` and `/ed` commands + a discovery skill) |
 | Portable skill | `portable/ed/` | copy `SKILL.md` + canon into any skill-aware agent |
 | pi agent package | `pi/` | `pi install git:github.com/daedalusos/directive-framework` |
 | Planning cockpit | `cockpit/` | run the backend (`python3 cockpit/server/app.py`), which serves the UI + `/api` |
