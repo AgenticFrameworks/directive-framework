@@ -15,7 +15,7 @@ It turns an idea into reviewed work through explicit, inspectable artifacts — 
 - Canon/runtime separation: reusable framework canon stays clean; each consumer owns `_directives/` runtime state.
 - Built-in review and intent-drift protocols, plus a reproducible release check.
 - Three native install surfaces: a Claude Code plugin, a standalone portable skill, and a **pi agent package** that fuses the pipeline into the pi harness with fail-closed `tool_call` phase gates.
-- An interactive **planning cockpit**: a client-only web front door that converges scope conversationally and exports gate-passing `PD`/`DD` packets.
+- An interactive **planning cockpit**: a web front door (UI + backend) that converges scope conversationally and writes gate-passing `PD`/`DD` packets straight into a project's `_directives/`, with the real `design-intake` gate one click away.
 
 ## Surfaces
 
@@ -24,7 +24,7 @@ It turns an idea into reviewed work through explicit, inspectable artifacts — 
 | Claude Code plugin | `.claude-plugin/` | drop the repo into Claude Code's plugin dir |
 | Portable skill | `portable/ed/` | copy `SKILL.md` + canon into any skill-aware agent |
 | pi agent package | `pi/` | `pi install git:github.com/daedalusos/directive-framework` |
-| Planning cockpit | `cockpit/` | serve the static bundle (`python3 -m http.server --directory cockpit`) |
+| Planning cockpit | `cockpit/` | run the backend (`python3 cockpit/server/app.py`), which serves the UI + `/api` |
 
 The pi package is the native fusion: a pi extension (`pi/extensions/directives.ts`) registers `directive_*` tools, a `/directives` command, per-turn phase-context injection, and a fail-closed write gate covering `write`/`edit`/`bash` redirect targets; a deterministic runtime (`pi/runtime/directives-runtime.mjs`) owns every cursor/registry/gate mutation. See `pi/README.md` and `pi/INSTALL.md`.
 
