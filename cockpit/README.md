@@ -25,18 +25,23 @@ under `server/` is first-class source maintained here.
 
 ```bash
 # from the repo root — serves UI + API on one origin
-OPENROUTER_API_KEY=... python3 cockpit/server/app.py [--project DIR] [--port 5000]
+python3 cockpit/server/app.py [--project DIR] [--port 5000]
 # then open http://localhost:5000/
 ```
 
 - `--project DIR` — the project whose `_directives/` receives packets. Omit it to use the
   **repo root as a scratch surface** (`is_scratch: true`); point it at a real consuming
   project for actual planning work.
-- `OPENROUTER_API_KEY` — required only for `/api/chat`. Per the model-provider policy the
-  backend routes through OpenRouter (default model `owl-alpha`; `perplexity/sonar` for
-  research turns, `perplexity/sonar-reasoning` for deep probes). The board / accept / settle
-  / gate flow works without it. The provider/model set is defined in one place —
-  `PROVIDERS` in `server/app.py`.
+- **Provider key** — required only for `/api/chat`; the board / accept / settle / gate flow
+  works without one. Two providers are supported, selected at runtime by which key is in the
+  environment (override with `COCKPIT_PROVIDER=perplexity|openrouter`):
+  - `PERPLEXITY_API_KEY` → **Perplexity** direct (models `sonar` / `sonar-pro` /
+    `sonar-reasoning`). Sonar is what performs the live web search behind research/deep
+    probes and returns the `citations` the UI renders. Preferred when present.
+  - `OPENROUTER_API_KEY` → **OpenRouter** (default `owl-alpha`; `perplexity/sonar*` for
+    research), the model-provider-policy default proxy.
+
+  The provider/model set lives in one place — `PROVIDERS` in `server/app.py`.
 
 ## API surface (frontend ⇄ backend contract)
 

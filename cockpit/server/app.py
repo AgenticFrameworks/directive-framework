@@ -44,7 +44,21 @@ DESIGN_INTAKE_GATE = os.path.join(FRAMEWORK_ROOT, "gates", "design-intake.md")
 # LLM provider surface (model-provider policy: OpenRouter first, owl-alpha default).
 # ---------------------------------------------------------------------------
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
+
+# Two providers. Perplexity is direct (its Sonar models do the web search that
+# powers research/deep probes and return citations); OpenRouter is the
+# policy-default proxy (owl-alpha for plain chat, perplexity/sonar* for research).
+# The active default is chosen at runtime by which key is present (see
+# default_provider) — this honors an explicit Perplexity pin when only that key
+# is set, per the model-provider policy's pinned-exception scope note.
 PROVIDERS = {
+    "perplexity": {
+        "label": "Perplexity",
+        "default": "sonar",
+        "models": ["sonar", "sonar-pro", "sonar-reasoning"],
+        "deep_model": "sonar-reasoning",
+    },
     "openrouter": {
         "label": "OpenRouter",
         "default": "owl-alpha",
@@ -52,8 +66,23 @@ PROVIDERS = {
         "deep_model": "perplexity/sonar-reasoning",
     },
 }
-RESEARCH_MODEL = "perplexity/sonar"          # online-capable, for want_research
-DEEP_MODEL = "perplexity/sonar-reasoning"    # online + reasoning, for deep probes
+PROVIDER_ENDPOINTS = {
+    "perplexity": {"url": PERPLEXITY_URL, "key_env": "PERPLEXITY_API_KEY"},
+    "openrouter": {"url": OPENROUTER_URL, "key_env": "OPENROUTER_API_KEY"},
+}
+
+
+def default_provider():
+    """Pick the active provider. Honors COCKPIT_PROVIDER, else prefers whichever
+    key is actually present (Perplexity pin first, then OpenRouter)."""
+    override = os.environ.get("COCKPIT_PROVIDER")
+    if override in PROVIDER_ENDPOINTS:
+        return override
+    if os.environ.get("PERPLEXITY_API_KEY"):
+        return "perplexity"
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return "perplexity"
 
 SYSTEM_PROMPT = """\
 You are the Directive Planner: a planning facilitator for the Directive Framework.
@@ -276,12 +305,17 @@ class Runtime:
 # ---------------------------------------------------------------------------
 # LLM chat — OpenRouter, with a parsed proposal block.
 # ---------------------------------------------------------------------------
-def _select_model(req):
-    if req.get("deep"):
-        return DEEP_MODEL
-    if req.get("want_research"):
-        return RESEARCH_MODEL
-    return req.get("model") or PROVIDERS["openrouter"]["default"]
+def _select_model(req, provider):
+    p = PROVIDERS[provider]
+    if req.get("deep") and p.get("deep_model"):
+        return p["deep_model"]
+    model = req.get("model")
+    if model and model in p["models"]:
+        return model
+    # OpenRouter's default (owl-alpha) is not online; upgrade research turns to Sonar.
+    if req.get("want_research") and provider == "openrouter" and not model:
+        return "perplexity/sonar"
+    return p["default"]
 
 
 PROPOSAL_RE = re.compile(r"```proposal\s*(\{.*?\})\s*```", re.DOTALL)
@@ -309,49 +343,65 @@ def _extract_proposal(content):
     return reply, proposal
 
 
+def _citations(data):
+    """Normalize both Perplexity (`citations` URL strings + `search_results`
+    dicts) and OpenRouter citation shapes into [{url, title}]."""
+    out, seen = [], set()
+    for c in data.get("citations", []) or []:
+        url = c if isinstance(c, str) else (c.get("url") if isinstance(c, dict) else None)
+        if url and url not in seen:
+            title = c.get("title", url) if isinstance(c, dict) else url
+            out.append({"url": url, "title": title})
+            seen.add(url)
+    for s in data.get("search_results", []) or []:
+        url = s.get("url") if isinstance(s, dict) else None
+        if url and url not in seen:
+            out.append({"url": url, "title": s.get("title", url)})
+            seen.add(url)
+    return out
+
+
 def chat(req):
-    key = os.environ.get("OPENROUTER_API_KEY")
+    provider = req.get("provider")
+    if provider not in PROVIDER_ENDPOINTS:
+        provider = default_provider()
+    endpoint = PROVIDER_ENDPOINTS[provider]
+    label = PROVIDERS[provider]["label"]
+    key = os.environ.get(endpoint["key_env"])
     if not key:
-        return {"ok": False, "error": "OPENROUTER_API_KEY not set in the server environment"}
-    model = _select_model(req)
+        return {"ok": False,
+                "error": f"{endpoint['key_env']} not set in the server environment"}
+    model = _select_model(req, provider)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in req.get("messages", []):
         role = m.get("role")
         if role in ("user", "assistant") and m.get("content"):
             messages.append({"role": role, "content": m["content"]})
     payload = json.dumps({"model": model, "messages": messages}).encode()
-    request = urllib.request.Request(
-        OPENROUTER_URL, data=payload, method="POST",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/AgenticFrameworks/directive-framework",
-            "X-Title": "Directive Planner Cockpit",
-        })
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "https://github.com/AgenticFrameworks/directive-framework"
+        headers["X-Title"] = "Directive Planner Cockpit"
+    request = urllib.request.Request(endpoint["url"], data=payload, method="POST",
+                                     headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=120) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
-        return {"ok": False, "error": f"OpenRouter {e.code}: {detail}"}
+        return {"ok": False, "error": f"{label} {e.code}: {detail}"}
     except (urllib.error.URLError, TimeoutError) as e:
-        return {"ok": False, "error": f"OpenRouter unreachable: {e}"}
+        return {"ok": False, "error": f"{label} unreachable: {e}"}
 
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        return {"ok": False, "error": "OpenRouter returned no message"}
+        return {"ok": False, "error": f"{label} returned no message"}
     reply, proposal = _extract_proposal(content)
-    citations = []
-    for c in data.get("citations", []) or []:
-        if isinstance(c, str):
-            citations.append({"url": c, "title": c})
-        elif isinstance(c, dict) and c.get("url"):
-            citations.append({"url": c["url"], "title": c.get("title", c["url"])})
     return {
         "ok": True, "reply": reply, "proposal": proposal,
         "probes": proposal["probes"] if proposal else [],
-        "citations": citations,
+        "citations": _citations(data),
     }
 
 
@@ -429,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/config":
             self._json({
                 "providers": PROVIDERS,
-                "provider_default": "openrouter",
+                "provider_default": default_provider(),
                 "is_scratch": r.is_scratch,
                 "project": r.project,
                 "directives_dir": r.root,
